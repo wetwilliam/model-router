@@ -1,0 +1,12 @@
+{
+  "name": "claude-code-model-router",
+  "private": true,
+  "description": "開發用指令集（mod 本身沒有 npm 相依）。需要已安裝 claude CLI 與 Node.js。",
+  "scripts": {
+    "validate": "claude plugin validate model-router",
+    "validate:marketplace": "claude plugin validate .",
+    "typecheck": "npx --yes -p typescript@5 tsc -p model-router",
+    "test": "claude plugin test model-router",
+    "check": "npm run validate && npm run validate:marketplace && npm run typecheck && npm test"
+  }
+}

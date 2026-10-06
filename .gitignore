@@ -1,0 +1,7 @@
+# 引擎載入 mod 時自動寫入的型別（每次載入重寫，不進版控）
+model-router/.claude-plugin/types/
+
+node_modules/
+*.log
+Thumbs.db
+.DS_Store

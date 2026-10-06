@@ -1,0 +1,26 @@
+{
+  "name": "model-router",
+  "version": "0.2.0",
+  "description": "在對話開始、clear、compact、resume 時依 prompt 選擇 Opus / Sonnet / Haiku 與 effort；中途只升不降",
+  "userConfig": {
+    "midSession": {
+      "type": "string",
+      "title": "對話中途的行為",
+      "description": "upgrade：高信心時自動升級；suggest：只提示；off：中途不分類",
+      "options": [
+        "upgrade",
+        "suggest",
+        "off"
+      ],
+      "default": "upgrade"
+    }
+  },
+  "license": "MIT",
+  "keywords": [
+    "model-routing",
+    "opus",
+    "sonnet",
+    "haiku",
+    "effort"
+  ]
+}

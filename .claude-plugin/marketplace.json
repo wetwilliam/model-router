@@ -1,0 +1,14 @@
+{
+  "name": "model-router",
+  "owner": {
+    "name": "model-router contributors"
+  },
+  "description": "Claude Code 自動模型路由器的 marketplace",
+  "plugins": [
+    {
+      "name": "model-router",
+      "source": "./model-router",
+      "description": "依 prompt 自動選擇 Opus / Sonnet / Haiku 與 effort；對話中途只升不降"
+    }
+  ]
+}
