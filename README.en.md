@@ -36,14 +36,14 @@ Requires Claude Code **v2.1.291+** (terminal).
 **Try it without installing (tested):**
 
 ```powershell
-git clone <this repo's URL> model-router-repo
+git clone https://github.com/wetwilliam/model-router.git model-router-repo
 claude --plugin-dir ".\model-router-repo\model-router"
 ```
 
 **Install from the marketplace (per the official docs; not yet tested locally):**
 
 ```
-/plugin install model-router --marketplace <owner>/<repo>
+/plugin install model-router --marketplace wetwilliam/model-router
 ```
 
 ## Use

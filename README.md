@@ -60,7 +60,7 @@ Prompt cache 依模型分開。對話中途換模型，新模型要把整段 con
 ### 方法 A：先試用，不安裝（已實測）
 
 ```powershell
-git clone <這個 repo 的網址> model-router-repo
+git clone https://github.com/wetwilliam/model-router.git model-router-repo
 claude --plugin-dir ".\model-router-repo\model-router"
 ```
 
@@ -71,13 +71,13 @@ claude --plugin-dir ".\model-router-repo\model-router"
 在 Claude Code 的提示列輸入：
 
 ```
-/plugin install model-router --marketplace <owner>/<repo>
+/plugin install model-router --marketplace wetwilliam/model-router
 ```
 
 依序會問：`Add marketplace?` → 輸入 `y`；選擇安裝範圍（user scope 為所有專案生效）；設定 `userConfig`（`midSession`）。
 完成後顯示 `Installed model-router. Plugin is now active.`，不需重啟。
 
-`<owner>/<repo>` 換成你放這個 repo 的 GitHub 位置。來源也可以是 git URL 或本機資料夾路徑。
+來源也可以是完整的 git URL（`https://github.com/wetwilliam/model-router.git`）或本機資料夾路徑。
 
 ### 確認有生效
 
