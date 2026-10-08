@@ -103,8 +103,37 @@ claude --plugin-dir ".\model-router-repo\model-router"
 | `/route sonnet [effort]` | 鎖定 Sonnet |
 | `/route haiku` | 鎖定 Haiku（不帶 effort） |
 | `/route auto` | 解除鎖定，**下一句重新完整分類**（可升可降） |
+| `/guard` | 顯示上下文守衛的門檻、設定值，以及最近 5 次評估結果（診斷用） |
 
 > `max` 很貴，mod 不會自動選，要用請 `/route opus max` 或 `/effort max`。
+
+### 上下文守衛（Context guard）
+
+模型選對了，另一個大宗成本是**對話越拉越長**：每一輪都要重讀整段歷史。守衛會在你送出訊息前檢查兩件事，必要時跳出選項讓你決定，**不會自動清除或壓縮**。
+
+| 觸發條件 | 跳出的選項 |
+|---|---|
+| 新訊息和先前對話**無關**（Haiku 判斷，信心 ≥ 0.8） | **是，清除** ／ **否，繼續** |
+| Context **過大**（≥ 200k tokens 或視窗使用率 ≥ 50%） | **壓縮** ／ **清除** ／ **繼續** |
+| 兩者同時成立 | **清除** ／ **壓縮** ／ **繼續**（同一個問題） |
+
+- **清除**：執行 `/clear`，再把你原本的訊息原樣重送；router 會在新對話重新分類模型。
+- **壓縮**：執行 compact，然後正常送出你的訊息。
+- **繼續**：之後 context 再增加 10 個百分點或 50k tokens 才會再問，不會每句都問。
+- 相關性偵測只在 context ≥ 8k tokens 且已有來回對話時才跑（context 太小時清除省不了什麼）。判斷不確定時一律當成「相關」，寧可多留也不誤清。
+- 訊息帶 `@檔案` 或圖片時不提供「清除」（重送會遺失它們），只會問壓縮。
+- 只攔你自己在終端機送出的訊息；斜線指令、外掛與背景任務送出的不會被攔。
+- 偵測逾時、被你按 Esc、或任何錯誤，一律照常送出訊息。
+
+在 `/config` 的 plugin 設定調整（留空即用預設）：
+
+| 設定 | 預設 | 說明 |
+|---|---|---|
+| `guardTokens` | `200000` | context 絕對 tokens 門檻。1M 視窗的 50% 是 500k，太晚，所以用絕對值補強 |
+| `guardPercent` | `50` | 視窗使用率門檻（%）；兩者任一達到就詢問 |
+| `relevance` | `on` | `off` 可關閉相關性偵測，只保留「過大」提示，並省下每句一次的 Haiku 呼叫 |
+
+> 若 `/guard` 顯示 `tokens=undefined`：引擎在「目前視窗的第一次回應」之前不提供用量，守衛會改用本地估算（`src=breakdown`）補上。
 
 ### 設定：`midSession`
 
@@ -129,6 +158,8 @@ claude --plugin-dir ".\model-router-repo\model-router"
 - **Early Access API**：mod API 可能隨 Claude Code 更新而改變，更新後請跑 `npm run check`。
 - **分類本身要花錢與時間**：每次分類是一次 Haiku 呼叫（輸入約 2–3k tokens、約 1–2 秒）。`midSession: off` 可大幅減少。
 - **中途升級會重建一次 cache**，那一輪成本較高。
+- **相關性偵測每句多一次 Haiku 呼叫**（輸入約 1k tokens，context ≥ 8k 才跑）。覺得干擾或太貴可設 `relevance: off`。
+- **「清除」的重送不展開 `@檔案` 與圖片**，所以有附件時不提供清除。這個行為依型別定義實作，建議用 `/guard` 與實際操作確認。
 - **還沒有 Jev 分類器**：設計文件評估過 TypeSafe 的 Jev（70–500 ms），但尚未實作。
 - 完整清單見 [設計文件 §5](docs/design.md#5-已知限制)。
 

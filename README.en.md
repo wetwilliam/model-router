@@ -51,7 +51,30 @@ claude --plugin-dir ".\model-router-repo\model-router"
 - Status line shows e.g. `🟡 sonnet · medium`; `📌` = pinned with `/route`; `🧭 手動 /model` = you switched manually, the mod stays out of the way.
 - `/route opus|sonnet|haiku [low|medium|high|xhigh|max]` pins a model; `/route auto` unpins and re-classifies the next prompt.
 - Setting `midSession`: `upgrade` (default) · `suggest` (only a toast) · `off` (no classification mid-conversation).
+- `/guard` shows the context guard's thresholds, settings and the last 5 evaluations (diagnostics).
 - Never touched: models you pick with `/model`, subagents, and anything when classification fails or times out (the current route is kept).
+
+## Context guard
+
+Right model, wrong habit: a long conversation re-reads its whole history every turn. Before each prompt you type, the guard checks two things and, if needed, **asks** — it never clears or compacts on its own.
+
+| Trigger | Options |
+|---|---|
+| The new prompt is **unrelated** to the recent conversation (Haiku verdict, confidence ≥ 0.8) | **Yes, clear** / **No, continue** |
+| Context is **large** (≥ 200k tokens or ≥ 50% of the window) | **Compact** / **Clear** / **Continue** |
+| Both | **Clear** / **Compact** / **Continue** (one question) |
+
+- **Clear** runs `/clear` and re-submits your original prompt unchanged; the router re-classifies it in the fresh conversation.
+- **Compact** runs a compaction, then your prompt goes through.
+- **Continue** silences the size question until context grows another 10 points or 50k tokens.
+- Relevance is only checked when context is ≥ 8k tokens and there is a real exchange. When unsure, the verdict is "related".
+- Prompts with `@file` mentions or attachments get no "clear" option (a re-submit would lose them).
+- Only your own prompts typed at the terminal are checked, not slash commands, plugins or background tasks.
+- A timeout, Esc, or any error lets the prompt through untouched.
+
+Settings (leave empty for defaults): `guardTokens` (`200000`; an absolute threshold, since 50% of a 1M window is too late), `guardPercent` (`50`), `relevance` (`on`; `off` skips the per-prompt Haiku call).
+
+If `/guard` shows `tokens=undefined`, the engine reports no usage until the live window's first response; the guard then falls back to a local estimate (`src=breakdown`).
 
 ## Development
 
