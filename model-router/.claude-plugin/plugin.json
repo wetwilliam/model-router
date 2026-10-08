@@ -1,6 +1,6 @@
 {
   "name": "model-router",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "在對話開始、clear、compact、resume 時依 prompt 選擇 Opus / Sonnet / Haiku 與 effort；中途只升不降",
   "userConfig": {
     "midSession": {

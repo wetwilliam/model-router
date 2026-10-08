@@ -2,7 +2,7 @@
 
 格式參考 [Keep a Changelog](https://keepachangelog.com/)，版本號依 `model-router/.claude-plugin/plugin.json`。
 
-## [Unreleased]
+## [0.3.0] — 2026-10-08
 
 ### 新增
 - 上下文守衛：送出訊息前，若與先前對話無關（Haiku 判斷）或 context 過大（≥ 200k tokens / 50%），詢問清除或壓縮；清除後原樣重送訊息。
