@@ -13,6 +13,26 @@
         "off"
       ],
       "default": "upgrade"
+    },
+    "guardPercent": {
+      "type": "string",
+      "title": "Context 使用率達幾 % 時詢問 clear / compact",
+      "description": "視窗使用率門檻；留空使用內建預設（50）"
+    },
+    "guardTokens": {
+      "type": "string",
+      "title": "Context 達幾 tokens 時詢問 clear / compact",
+      "description": "context 絕對 tokens 門檻；留空使用內建預設（見 hooks/guard.ts）。1M 視窗的 50% 太晚，兩者任一達到就詢問"
+    },
+    "relevance": {
+      "type": "string",
+      "title": "話題相關性偵測",
+      "description": "on：每句用 Haiku 判斷是否與先前對話無關，無關時詢問是否 clear；off：關閉",
+      "options": [
+        "on",
+        "off"
+      ],
+      "default": "on"
     }
   },
   "license": "MIT",

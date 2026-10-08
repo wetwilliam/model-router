@@ -2,6 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
+import { DEFAULT_GUARD, Guard, LABEL, parseRelevance, relevanceInput } from '../hooks/guard'
 import { MODEL, parseClassification, Router } from '../hooks/router'
 import type { Classified, Tier } from '../hooks/router'
 
@@ -180,4 +181,85 @@ test('引擎：中途高信心升級到 Opus，之後已是 Opus 不再分類', 
   await step($)
   expect(bottom.sent[0]).toEqual({ model: MODEL.TIER_1_OPUS, effort: 'xhigh' })
   expect(bottom.calls()).toBe(2)
+})
+
+describe('上下文守衛', () => {
+  const big = { tokens: 250_000, percent: 25 }
+  const small = { tokens: 20_000, percent: 2 }
+
+  test('parseRelevance 解析 JSON，格式錯誤回傳 undefined', () => {
+    expect(parseRelevance('{"related": false, "confidence": 0.9}')).toEqual({ related: false, confidence: 0.9 })
+    expect(parseRelevance('{"related": true}')).toEqual({ related: true, confidence: 0.5 })
+    expect(parseRelevance('{"related": "no"}')).toBeUndefined()
+    expect(parseRelevance('無關')).toBeUndefined()
+  })
+
+  test('小 context 或訊息太少不做相關性偵測', () => {
+    const g = new Guard()
+    expect(g.shouldCheckRelevance({ tokens: 3000 }, 6)).toBe(false)
+    expect(g.shouldCheckRelevance(small, 1)).toBe(false)
+    expect(g.shouldCheckRelevance(small, 4)).toBe(true)
+    expect(new Guard({ ...DEFAULT_GUARD, relevance: false }).shouldCheckRelevance(small, 4)).toBe(false)
+  })
+
+  test('無關且高信心 → 問 clear（是/否）；低信心不問', () => {
+    const g = new Guard()
+    const q = g.decide(small, { related: false, confidence: 0.9 }, true)
+    expect(q?.reason).toBe('unrelated')
+    expect(q?.options).toEqual([LABEL.yes, LABEL.no])
+    expect(g.decide(small, { related: false, confidence: 0.6 }, true)).toBeUndefined()
+    expect(g.decide(small, { related: true, confidence: 0.95 }, true)).toBeUndefined()
+  })
+
+  test('過大 → 問 compact / clear / 繼續；使用率或 tokens 任一達標', () => {
+    const g = new Guard()
+    expect(g.decide(big, undefined, true)?.options).toEqual([LABEL.compact, LABEL.clear, LABEL.continue])
+    expect(g.decide({ tokens: 100_000, percent: 55 }, undefined, true)?.reason).toBe('size')
+    expect(g.decide({ tokens: 100_000, percent: 30 }, undefined, true)).toBeUndefined()
+  })
+
+  test('又無關又過大 → 同一個問題三選項', () => {
+    const q = new Guard().decide(big, { related: false, confidence: 0.9 }, true)
+    expect(q?.reason).toBe('unrelated')
+    expect(q?.options).toEqual([LABEL.clear, LABEL.compact, LABEL.continue])
+  })
+
+  test('有附件 / @ 檔案時不提供 clear，無關也只在過大時問 compact', () => {
+    const g = new Guard()
+    expect(g.decide(small, { related: false, confidence: 0.9 }, false)).toBeUndefined()
+    expect(g.decide(big, { related: false, confidence: 0.9 }, false)?.options).toEqual([LABEL.compact, LABEL.continue])
+  })
+
+  test('選繼續後冷卻：再長 10% 或 50k 才再問；reset 後重新計算', () => {
+    const g = new Guard()
+    g.declined(big)
+    expect(g.decide({ tokens: 260_000, percent: 26 }, undefined, true)).toBeUndefined()
+    expect(g.decide({ tokens: 310_000, percent: 31 }, undefined, true)?.reason).toBe('size')
+    g.reset()
+    expect(g.decide(big, undefined, true)?.reason).toBe('size')
+  })
+
+  test('回答對應：Other 自由文字視為繼續', () => {
+    const g = new Guard()
+    expect(g.choice(LABEL.yes)).toBe('clear')
+    expect(g.choice(LABEL.clear)).toBe('clear')
+    expect(g.choice(LABEL.compact)).toBe('compact')
+    expect(g.choice(LABEL.no)).toBe('continue')
+    expect(g.choice('隨便打的字')).toBe('continue')
+  })
+
+  test('relevanceInput 取最近 3 則 user 與最後一則 assistant，並截斷', () => {
+    const msgs = [
+      { role: 'user', text: 'u1' },
+      { role: 'user', text: 'u2' },
+      { role: 'user', text: 'u3' },
+      { role: 'assistant', text: 'a'.repeat(500) },
+      { role: 'user', text: 'u4' },
+    ]
+    const s = relevanceInput(msgs, '新問題')
+    expect(s).not.toContain('user: u1')
+    expect(s).toContain('user: u4')
+    expect(s).toContain('…')
+    expect(s).toContain('<new_prompt>\n新問題\n</new_prompt>')
+  })
 })
