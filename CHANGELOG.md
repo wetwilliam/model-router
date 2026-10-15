@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-10-15
+
 ### 修正
 - 上下文守衛選「壓縮」或「清除」時實際上沒有執行：`prompt.submit` hook 裡的 `$.session.compact()` 與 `$.command.run()` 會被引擎拒絕（host check：「it would compact under the turn this hook is holding」），錯誤被吞掉後訊息照常送出。改為先擋下訊息，hook 回傳後執行 `/compact` 或 `/clear`，再原樣重送。
 - 清除後重送的訊息不會再經過同一個 hook，router 原本不會在新對話重新分類；改為重送前先分類。
