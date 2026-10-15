@@ -7,6 +7,9 @@ import { parseClassification, Router } from './router'
 import type { Classified, MidSession, SessionEvent } from './router'
 
 const CLASSIFY_TIMEOUT_MS = 4000 // 分類逾時就沿用目前路由
+// prompt.submit hook 還沒回傳時，引擎會拒絕 compact / 執行指令（host check：「it would compact under the turn
+// this hook is holding」）。所以守衛先擋下訊息，等這段時間讓 hook 確實回傳，再執行 /compact 或 /clear
+const AFTER_DROP_MS = 100
 
 async function classify($: EngineInterface, input: string): Promise<Classified | undefined> {
   const stop = new AbortController()
@@ -32,6 +35,24 @@ async function checkRelevance($: EngineInterface, input: string): Promise<Releva
     { signal: stop.signal },
   )
   return r.isAnswered ? parseRelevance(r.text) : undefined
+}
+
+/** 路由窗口開著或對話中途時，替這句分類並套用 */
+async function routePrompt($: EngineInterface, router: Router, text: string) {
+  const pending = router.pending()
+  if (pending) {
+    try {
+      const event: SessionEvent = pending.event
+      const out = await classify($, router.classifierInput(text, event))
+      const messageCount = event === 'resume' ? (await $.session.messages()).length : 0
+      const { toast } = router.applyClassification(pending, out, messageCount)
+      if (toast) $.ui.toast(toast)
+    } catch {
+      // 分類器出錯絕不影響主流程：沿用目前路由
+    }
+    $.ui.status(router.status())
+  }
+  router.finishPrompt(text)
 }
 
 const NL = String.fromCharCode(10)
@@ -118,24 +139,43 @@ export const register: Register = (on, options) => {
         const rel = guard.shouldCheckRelevance(m, messages.length)
           ? await checkRelevance($, relevanceInput(messages, e.text)).catch(() => undefined)
           : undefined
-        const canClear = !e.attachments?.length && !/(^|\s)@\S/.test(e.text)
-        const q = guard.decide(m, rel, canClear)
-        note(`「${e.text.slice(0, 12)}」 src=${source} tokens=${m.tokens} percent=${m.percent} messages=${messages.length} relevance=${rel ? `${rel.related}@${rel.confidence}` : '未偵測/失敗'} canClear=${canClear} → ${q ? `詢問(${q.reason})` : '不詢問'}`)
+        // 重送時 @檔案 不會展開、圖片會遺失，所以帶著它們的訊息不能自動重送
+        const canResend = !e.attachments?.length && !/(^|\s)@\S/.test(e.text)
+        const q = guard.decide(m, rel, canResend)
+        note(`「${e.text.slice(0, 12)}」 src=${source} tokens=${m.tokens} percent=${m.percent} messages=${messages.length} relevance=${rel ? `${rel.related}@${rel.confidence}` : '未偵測/失敗'} canResend=${canResend} → ${q ? `詢問(${q.reason})` : '不詢問'}`)
         if (q) {
           const answer = await $.ui.ask(q.question, { options: q.options, header: q.header })
           const choice = guard.choice(answer)
-          if (choice === 'clear') {
-            await $.command.run({ command: 'clear' })
-            guard.reset()
-            void $.prompt.submit({ text: e.text, asUser: true }) // 清除後原樣重送，router 會在新窗口重新分類
-            return { drop: '已清除對話，正在重新送出你的訊息' }
+          if (choice !== 'continue') {
+            // 在這個 hook 裡 compact / clear 會被引擎拒絕：先擋下這句，hook 回傳後再執行指令並重送
+            const text = e.text
+            const verb = choice === 'clear' ? '清除' : '壓縮'
+            void $.clock.sleep(AFTER_DROP_MS)
+              .then(async () => {
+                try {
+                  await $.command.run({ command: choice })
+                  note(`已執行 /${choice}`)
+                } catch (err) {
+                  note(`/${choice} 失敗：${err instanceof Error ? err.message : String(err)}`)
+                  $.ui.toast(`/${choice} 沒有執行成功，原因見 /guard`)
+                }
+                guard.reset()
+                if (canResend) {
+                  // 外掛自己送的 prompt 不會再經過這個 hook，所以先在這裡替新窗口分類
+                  await routePrompt($, router, text)
+                  await $.prompt.submit({ text, asUser: true })
+                } else {
+                  await $.prompt.fill({ text })
+                  $.ui.toast(`已${verb}。訊息含 @檔案或圖片，無法自動重送：文字已放回輸入框，按 Enter 送出（圖片需重新貼上）`)
+                }
+              })
+              .catch((err) => {
+                note(`重送失敗，文字放回輸入框：${err instanceof Error ? err.message : String(err)}`)
+                $.prompt.fill({ text }).catch(() => {})
+              })
+            return { drop: `正在${verb}對話，完成後會自動重新送出你的訊息` }
           }
-          if (choice === 'compact') {
-            await $.session.compact()
-            guard.reset()
-          } else if (q.reason === 'size') {
-            guard.declined(m)
-          }
+          if (q.reason === 'size') guard.declined(m)
         }
       } catch (err) {
         // 被取消、逾時或 API 出錯：照常送出，但把原因留給 /guard 診斷
@@ -145,20 +185,7 @@ export const register: Register = (on, options) => {
       note(`略過：來源 ${e.origin.kind}${e.text.startsWith('/') ? '、斜線指令' : ''}「${e.text.slice(0, 12)}」`)
     }
 
-    const pending = router.pending()
-    if (pending) {
-      try {
-        const event: SessionEvent = pending.event
-        const out = await classify($, router.classifierInput(e.text, event))
-        const messageCount = event === 'resume' ? (await $.session.messages()).length : 0
-        const { toast } = router.applyClassification(pending, out, messageCount)
-        if (toast) $.ui.toast(toast)
-      } catch {
-        // 分類器出錯絕不影響主流程：沿用目前路由
-      }
-      $.ui.status(router.status())
-    }
-    router.finishPrompt(e.text)
+    await routePrompt($, router, e.text)
     return next(e)
   })
 

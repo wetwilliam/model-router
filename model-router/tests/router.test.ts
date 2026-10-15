@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
@@ -181,6 +181,93 @@ test('引擎：中途高信心升級到 Opus，之後已是 Opus 不再分類', 
   await step($)
   expect(bottom.sent[0]).toEqual({ model: MODEL.TIER_1_OPUS, effort: 'xhigh' })
   expect(bottom.calls()).toBe(2)
+})
+
+// context 已過大的 session：守衛會詢問，使用者回答 answer；記錄執行的指令與送出的 prompt
+function guardBottom(engine: Engine, on: On, answer: string, classifierReply: object) {
+  const commands: string[] = []
+  const prompts: { text: string; origin: string }[] = []
+  const fills: string[] = []
+  const sent: { model: string; effort?: unknown }[] = []
+  let classifierCalls = 0
+  on('model.complete', () => {
+    classifierCalls++
+    return { value: reply(classifierReply) }
+  })
+  on('classic.SessionStart', () => ({}))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 250_000, window: 1_000_000, percent: 25 }, rateLimits: [] } }))
+  on('session.messages', () => ({ value: [] }))
+  on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => ({
+    result: { questions: e.questions, answers: { [e.questions[0]!.question]: answer } },
+  }))
+  on('command.run', async ($, e) => {
+    commands.push(e.command)
+    await engine.classic.SessionStart({ source: e.command as 'clear' | 'compact' }) // 真實引擎在 /clear、/compact 後會觸發
+    return { text: '' }
+  })
+  on('prompt.submit', ($, e) => {
+    prompts.push({ text: e.text, origin: e.origin.kind })
+    return { text: e.text }
+  })
+  on('prompt.fill', ($, e) => {
+    fills.push(e.text)
+    return { isFilled: true }
+  })
+  on('turn.step', async function* ($, e) {
+    sent.push({ model: e.model, effort: e.effort })
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null }
+  })
+  return { commands, prompts, fills, sent, calls: () => classifierCalls }
+}
+
+test('引擎：守衛選壓縮 → 先擋下訊息，hook 回傳後才執行 /compact，再重送並重新分類', async ($, on) => {
+  const clock = mock.clock(on)
+  const bottom = guardBottom($, on, LABEL.compact, { risk_tier: 'TIER_1_OPUS', effort: 'xhigh', confidence: 0.9 })
+  await $.classic.SessionStart({ source: 'startup' })
+
+  const first = await $.prompt.submit(say('幫我查這個 race condition'))
+  expect(first.drop).toContain('壓縮')
+  expect(bottom.commands).toEqual([]) // 在 hook 裡執行會被引擎拒絕，所以還沒跑
+
+  await clock.advance(200)
+  expect(bottom.commands).toEqual(['compact'])
+  expect(bottom.prompts).toEqual([{ text: '幫我查這個 race condition', origin: 'plugin' }])
+  expect(bottom.calls()).toBe(1)
+  await step($)
+  expect(bottom.sent[0]).toEqual({ model: MODEL.TIER_1_OPUS, effort: 'xhigh' })
+})
+
+test('引擎：守衛選清除 → 執行 /clear 後原樣重送', async ($, on) => {
+  const clock = mock.clock(on)
+  const bottom = guardBottom($, on, LABEL.clear, { risk_tier: 'TIER_3_HAIKU', effort: null, confidence: 0.9 })
+  await $.classic.SessionStart({ source: 'startup' })
+  const first = await $.prompt.submit(say('把這段 YAML 轉成 JSON'))
+  expect(first.drop).toContain('清除')
+  await clock.advance(200)
+  expect(bottom.commands).toEqual(['clear'])
+  expect(bottom.prompts).toEqual([{ text: '把這段 YAML 轉成 JSON', origin: 'plugin' }])
+})
+
+test('引擎：訊息帶 @檔案 → 壓縮後不自動重送，文字放回輸入框', async ($, on) => {
+  const clock = mock.clock(on)
+  const bottom = guardBottom($, on, LABEL.compact, { risk_tier: 'TIER_2_SONNET', effort: 'medium', confidence: 0.9 })
+  await $.classic.SessionStart({ source: 'startup' })
+  await $.prompt.submit(say('看一下 @src/app.ts'))
+  await clock.advance(200)
+  expect(bottom.commands).toEqual(['compact'])
+  expect(bottom.prompts).toEqual([])
+  expect(bottom.fills).toEqual(['看一下 @src/app.ts'])
+})
+
+test('引擎：守衛選繼續 → 訊息照常送出，不執行任何指令', async ($, on) => {
+  const clock = mock.clock(on)
+  const bottom = guardBottom($, on, LABEL.continue, { risk_tier: 'TIER_2_SONNET', effort: 'medium', confidence: 0.9 })
+  await $.classic.SessionStart({ source: 'startup' })
+  const first = await $.prompt.submit(say('繼續寫測試'))
+  expect(first.text).toBe('繼續寫測試')
+  await clock.advance(200)
+  expect(bottom.commands).toEqual([])
+  expect(bottom.prompts).toEqual([{ text: '繼續寫測試', origin: 'composer' }])
 })
 
 describe('上下文守衛', () => {

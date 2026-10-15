@@ -64,11 +64,13 @@ Right model, wrong habit: a long conversation re-reads its whole history every t
 | Context is **large** (≥ 200k tokens or ≥ 50% of the window) | **Compact** / **Clear** / **Continue** |
 | Both | **Clear** / **Compact** / **Continue** (one question) |
 
-- **Clear** runs `/clear` and re-submits your original prompt unchanged; the router re-classifies it in the fresh conversation.
-- **Compact** runs a compaction, then your prompt goes through.
+- **Clear** holds your prompt back, runs `/clear`, then re-submits it unchanged; the router re-classifies it in the fresh conversation.
+- **Compact** holds your prompt back, runs `/compact`, then re-submits it unchanged; the router re-classifies it too.
+- Why hold it back: while a prompt is being submitted the engine refuses a plugin's compaction or command (it would block the turn about to start), so the guard drops the prompt and runs `/compact` / `/clear` once the session is idle.
+- A prompt with `@file` mentions or attachments can't be re-submitted: after compacting, its text is put back in the prompt box for you to send with Enter (re-paste any images).
 - **Continue** silences the size question until context grows another 10 points or 50k tokens.
 - Relevance is only checked when context is ≥ 8k tokens and there is a real exchange. When unsure, the verdict is "related".
-- Prompts with `@file` mentions or attachments get no "clear" option (a re-submit would lose them).
+- Prompts with `@file` mentions or attachments get no "clear" option, only "compact".
 - Only your own prompts typed at the terminal are checked, not slash commands, plugins or background tasks.
 - A timeout, Esc, or any error lets the prompt through untouched.
 
