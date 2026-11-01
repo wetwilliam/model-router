@@ -41,6 +41,14 @@ TIER_3_HAIKU（低風險 / 輕量確定性）
 5. 確定性：是否只是格式變換、資訊擷取、或照現成材料作答？是 → TIER_3_HAIKU，否 → TIER_2_SONNET
 
 平手規則：無法確定時往上升一級，並把 confidence 設在 0.6 以下。
+
+# Difficulty（只有問答要填，否則 null）
+難度只用於「回答一個問題」。改檔、跑指令、寫程式、寫文件 → difficulty 一律 null，只看 risk_tier。
+- easy：標準知識、步驟清楚、答錯一眼能看出。
+- hard：要多步推理、條件互相牽制、或沒有現成解法的問題。
+- obscure：冷僻事實（日期、數字、專名、出處、引言），或使用者要求不要瞎編。
+無法確定是 easy 還是 hard 時填 hard，confidence 設在 0.6 以下。
+difficulty 不是 null 時，模型與 effort 由程式的對照表決定；risk_tier 仍要填合法值。
 confidence 代表你對 risk_tier 的把握；只有證據明確（例如明講安全、金流、資料遺失、根因不明）
 才給 0.8 以上。
 
@@ -52,13 +60,16 @@ confidence 代表你對 risk_tier 的把握；只有證據明確（例如明講�
 # Examples
 - startup，「把這段 YAML 轉成 JSON」→ TIER_3_HAIKU, null
 - startup，「幫我寫一支讀 CSV 畫月營收折線圖的 Python 腳本」→ TIER_2_SONNET, medium
-- startup，「幫 UserService 補單元測試」→ TIER_2_SONNET, medium
+- startup，「幫 UserService 補單元測試」→ TIER_2_SONNET, medium, difficulty null
 - startup，「支付服務在高併發下偶爾重複扣款，找出原因」→ TIER_1_OPUS, xhigh
 - startup，「審閱這份投資合約，指出對我方不利的條款」→ TIER_1_OPUS, high
 - compact，摘要顯示正在追查記憶體洩漏根因，使用者說「繼續」→ TIER_1_OPUS, high
 - mid，previous_tier=TIER_2_SONNET，「順便把 README 錯字改一改」→ TIER_2_SONNET（沿用）
 - mid，previous_tier=TIER_2_SONNET，「上線後資料庫有資料被覆蓋，幫我查」→ TIER_1_OPUS, xhigh, confidence 0.9
+- startup，「法國的首都是哪裡？」→ difficulty easy（risk_tier 仍填 TIER_3_HAIKU）
+- startup，「這步證明為什麼成立？請推導」→ difficulty hard
+- startup，「這篇 2014 年論文的精確引用次數」→ difficulty obscure
 
 # Output
 只輸出一個 JSON 物件，不要任何說明文字或 Markdown 程式碼框：
-{"task_intent":"15字內","risk_tier":"TIER_1_OPUS|TIER_2_SONNET|TIER_3_HAIKU","effort":"low|medium|high|xhigh|null","confidence":0.0,"routing_rationale":"一句話"}`
+{"task_intent":"15字內","risk_tier":"TIER_1_OPUS|TIER_2_SONNET|TIER_3_HAIKU","effort":"low|medium|high|xhigh|null","confidence":0.0,"difficulty":"easy|hard|obscure|null","routing_rationale":"一句話"}`

@@ -1,7 +1,7 @@
 {
   "name": "model-router",
-  "version": "0.3.1",
-  "description": "在對話開始、clear、compact、resume 時依 prompt 選擇 Opus / Sonnet / Haiku 與 effort；中途只升不降",
+  "version": "0.4.0",
+  "description": "依 prompt 選擇 Opus / Sonnet / Haiku 與 effort；問答再依難度路由，答完檢查，必要時重試一次",
   "userConfig": {
     "midSession": {
       "type": "string",
@@ -33,6 +33,24 @@
         "off"
       ],
       "default": "on"
+    },
+    "easyRoute": {
+      "type": "string",
+      "title": "容易問答的模型",
+      "description": "別名與 effort，跟 /route 一樣。預設 sonnet max；改成 sonnet medium 就是較省的一組",
+      "default": "sonnet max"
+    },
+    "hardRoute": {
+      "type": "string",
+      "title": "困難問答的模型",
+      "description": "預設 opus medium",
+      "default": "opus medium"
+    },
+    "obscureRoute": {
+      "type": "string",
+      "title": "冷僻事實的模型",
+      "description": "容易幻覺的事實題。預設 sonnet low（低推理）",
+      "default": "sonnet low"
     }
   },
   "license": "MIT",

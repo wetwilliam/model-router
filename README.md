@@ -105,7 +105,7 @@ claude --plugin-dir ".\model-router-repo\model-router"
 | `/route auto` | 解除鎖定，**下一句重新完整分類**（可升可降） |
 | `/guard` | 顯示上下文守衛的門檻、設定值，以及最近 5 次評估結果（診斷用） |
 
-> `max` 很貴，mod 不會自動選，要用請 `/route opus max` 或 `/effort max`。
+> `max` 很貴，改檔、跑指令這類任務不會自動選。容易的問答預設是 Sonnet · max（見下方）；其他情況要用請 `/route opus max`。
 
 ### 上下文守衛（Context guard）
 
@@ -147,6 +147,22 @@ claude --plugin-dir ".\model-router-repo\model-router"
 | `suggest` | 不切換，只跳通知「建議 `/route opus`」 | 有（目前已是 Opus 時跳過） |
 | `off` | 中途完全不分類 | 無（最省） |
 
+### 問答難度
+
+改檔、跑指令仍走上面的三層。**回答問題**時多一個難度，對照表在設定裡（寫法與 `/route` 相同）：
+
+| 難度 | 預設 | 設定 |
+|---|---|---|
+| 容易 | Sonnet · max | `easyRoute`（改成 `sonnet medium` 就是較省的一組） |
+| 困難 | Opus · medium | `hardRoute` |
+| 冷僻事實 | Sonnet · low | `obscureRoute` |
+
+容易題把便宜模型的推理開高、困難題只用強模型的 medium。一組 8 容易 + 2 困難的對照：這樣約 4.3 分、$2.02；全部走 Opus · medium 約 4.4 分、$3.90。信心低於 0.6 的容易或冷僻題改走困難那一組。對話中途仍然只升不降。
+
+答完若是純文字，先做免費檢查（要求的格式、合理區間、同一錯誤重複、長度超過近期正常答案的 2.5 倍且已有 5 筆）。有規則命中才用 Haiku 問一句，只收 `{"ok","why","confidence"}`。`ok` 為 false 且信心 ≥ 0.7 才重試**一次**：換成較強的模型，或把 effort 升一級。`/route` 鎖住或手動 `/model` 時不檢查。這次回答可能已經出現在畫面上。
+
+每一筆主迴圈請求追加到外掛目錄的 `cost.jsonl`（`usd_estimate` 用公開牌價估算，用來校準門檻，不是帳單）。超過約 3MB 就停止追加。
+
 ### 它**不會**動的東西
 
 - 你用 `/model` 手動選的模型（直到 `/route auto`）
@@ -177,6 +193,7 @@ claude --plugin-dir ".\model-router-repo\model-router"
 │   └── hooks/
 │       ├── prompt.ts                 router prompt（要調分類規則改這裡）
 │       ├── router.ts                 路由狀態機（純邏輯，不碰引擎，最容易測）
+│       ├── check.ts                  答後規則、重試條件、成本列
 │       └── register.ts               把引擎事件接到狀態機
 │   └── tests/router.test.ts
 ├── docs/                             設計文件、原始 prompt、截圖
@@ -203,6 +220,8 @@ npm run check    # validate + 型別檢查 + 測試，一次跑完
 
 **其他模型路由做法**
 - [claude-code-router](https://github.com/musistudio/claude-code-router)：本機 proxy，依請求類型分流，可接 DeepSeek、Gemini、Ollama 等
+- [RouteLLM](https://github.com/lm-sys/RouteLLM)：強弱模型分流的參考；本專案沒有把它當依賴
+- [TokenEconomizer loopguard](https://github.com/microsoft/TokenEconomizer/tree/main/tokeneconomizer/loopguard)：先免費規則、再便宜判斷的參考
 - [Pilot Shell：model routing](https://pilot-shell.com/docs/features/model-routing)：以 `opusplan` 為基礎的流程
 - [功能請求 #44976：Auto model routing by task type](https://github.com/anthropics/claude-code/issues/44976)（已關閉為重複）
 - [Claude Code’s New Model-Switch Hooks, Explained](https://jonathansblog.co.uk/?p=29790)

@@ -26,8 +26,9 @@ npm test           # claude plugin test model-router
 | 檔案 | 職責 | 修改時注意 |
 |---|---|---|
 | `hooks/prompt.ts` | router prompt | 改了分類規則，要同步更新 `docs/design.md` 的說明 |
-| `hooks/router.ts` | 路由狀態機：何時分類、如何套用結果 | **不要碰 `$`**。保持純邏輯，才能用單元測試覆蓋 |
-| `hooks/register.ts` | 引擎事件 ↔ 狀態機的膠水 | 越薄越好；新行為先放進 `router.ts` 再接線 |
+| `hooks/router.ts` | 路由狀態機：何時分類、如何套用結果、難度對照 | **不要碰 `$`**。保持純邏輯，才能用單元測試覆蓋 |
+| `hooks/check.ts` | 答後規則、判斷解析、重試條件、成本列 | 同樣不碰 `$` |
+| `hooks/register.ts` | 引擎事件 ↔ 狀態機的膠水 | 越薄越好；新行為先放進 `router.ts` / `check.ts` 再接線 |
 | `tests/router.test.ts` | 規則測試 + 經過引擎的整合測試 | 改規則就要改測試 |
 
 ## 修改規則前先看這幾點

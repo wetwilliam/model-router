@@ -3,5 +3,6 @@ model-router/.claude-plugin/types/
 
 node_modules/
 *.log
+cost.jsonl
 Thumbs.db
 .DS_Store

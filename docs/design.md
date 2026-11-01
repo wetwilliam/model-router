@@ -141,3 +141,29 @@ classic.PostModelSwitch（source = command / picker）
   - 高併發秒殺系統網路分區分析 → 🔴 opus · xhigh
 
   截圖見 [`images/`](images/)。實機紀錄只有這三張（新 session 第一句）；compact / resume / 中途升級 / `/route` 目前只有單元與整合測試，沒有實機紀錄。
+
+## 8. 問答難度與答後檢查
+
+編碼任務維持第 2 節的 risk tier。分類器多一個 `difficulty`（`easy` / `hard` / `obscure`，否則 `null`）。不是 null 時，模型與 effort 改由對照表決定，不採用分類器自己填的 tier。
+
+對照表用這個 repo 既有的寫法：`opus` / `sonnet` / `haiku` 加上 effort，實際送出的仍是 `MODEL` 裡的完整 ID。本 mod 只能改寫 Claude Code 接受的模型，所以三個位子是：
+
+| 難度 | 預設 | 為什麼 |
+|---|---|---|
+| easy | Sonnet · max | 便宜模型把推理開高。`easyRoute=sonnet medium` 是較省的另一組 |
+| hard | Opus · medium | 強模型只開到 medium，不自動上到 xhigh / max |
+| obscure | Sonnet · low | 冷僻事實用低推理，避免長鏈思考把事實說歪 |
+
+8 容易 + 2 困難的對照是選這組預設的理由：分開路由約 4.3 分、$2.02，全部走強模型 medium 約 4.4 分、$3.90。窗口內信心低於 0.6 就改走 hard（不確定就不要用便宜模型）。對話中途仍只升不降。
+
+做法對齊 [RouteLLM](https://github.com/lm-sys/RouteLLM) 的強弱分流（簡單走便宜、困難走強、不確定升上去），沒有把該套件加進來。
+
+答完（`stopReason === end_turn` 且沒有工具呼叫）才檢查，而且只對主迴圈、沒被 `/route` 或 `/model` 鎖住的請求：
+
+1. 免費規則：要求 JSON 或純數字卻沒給；短回答的百分比、年份或明示區間不合理；同一個錯誤簽名出現兩次；答案長度超過近期正常長度的 2.5 倍（至少 5 筆才比較，正常長度用中位數）。
+2. 有命中才呼叫 Haiku，只解析 `{ok, why, confidence}`。
+3. `ok === false` 且信心 ≥ 0.7 才 `yield* next()` 第二次，換成較強的模型（hard 那一組）或把 effort 升一級。同一輪只一次。判斷失敗就留下原回答。
+
+長度規則只負責叫醒判斷，不會單獨觸發重試。這跟 [loopguard](https://github.com/microsoft/TokenEconomizer/tree/main/tokeneconomizer/loopguard) 的「免費門檻 → 便宜判斷 → 信心 0.7」同一層次；那邊的 2.5× 是硬停止，這裡改成規則，因為使用者要的是重試一次而不是中止。
+
+`turn.step` 的串流在 `yield* next()` 時就已經顯示，所以第一次回答可能先出現，重試是第二個請求。成本追加到外掛目錄的 `cost.jsonl`。`usd_estimate` 用 [公開牌價](https://platform.claude.com/docs/en/about-claude/pricing)（cache write 以 5 分鐘、1.25× 計），給以後調門檻用，不是帳單。

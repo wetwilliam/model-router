@@ -5,7 +5,9 @@ export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type Route = { tier: Tier; effort?: Effort }
 export type SessionEvent = 'startup' | 'clear' | 'compact' | 'resume' | 'mid'
 export type MidSession = 'upgrade' | 'suggest' | 'off'
-export type Classified = { route: Route; confidence: number; rationale?: string }
+export type Difficulty = 'easy' | 'hard' | 'obscure'
+export type Classified = { route: Route; confidence: number; rationale?: string; difficulty?: Difficulty }
+export type DifficultyRoutes = Record<Difficulty, Route>
 
 export const MODEL: Record<Tier, string> = {
   TIER_1_OPUS: 'claude-opus-5-5',
@@ -27,6 +29,23 @@ export const LOW_CONFIDENCE = 0.6     // 路由窗口內：低於此值往上升
 export const UPGRADE_CONFIDENCE = 0.8 // 對話中途：至少這個信心才升級
 export const HAIKU_MAX_MESSAGES = 40  // resume 的對話超過此訊息數就不選 Haiku
 
+// 問答難度 → 模型。沿用 MODEL 的 Claude ID（本 mod 只能改寫 Claude Code 接受的模型）。
+// easy：便宜模型、推理開高（Sonnet · max）。改成 `sonnet medium` 就是較省的另一組。
+// hard：強模型只開 medium（Opus · medium）。
+// obscure：冷僻事實用低推理（Sonnet · low），避免長鏈思考把事實說歪。
+// 8 容易 + 2 困難：分開路由約 4.3 分 / $2.02，全部走強模型 medium 約 4.4 分 / $3.90。
+export const DIFFICULTY_ROUTES: DifficultyRoutes = {
+  easy: { tier: 'TIER_2_SONNET', effort: 'max' },
+  hard: { tier: 'TIER_1_OPUS', effort: 'medium' },
+  obscure: { tier: 'TIER_2_SONNET', effort: 'low' },
+}
+
+function readDifficulty(v: unknown): Difficulty | undefined {
+  if (v === 'obscure-fact') return 'obscure'
+  if (v === 'easy' || v === 'hard' || v === 'obscure') return v
+  return undefined
+}
+
 /** 解析分類器回覆的 JSON；格式不對回傳 undefined */
 export function parseClassification(text: string): Classified | undefined {
   const match = text.match(/\{[\s\S]*\}/)
@@ -38,7 +57,13 @@ export function parseClassification(text: string): Classified | undefined {
     const effort =
       tier !== 'TIER_3_HAIKU' && EFFORTS.includes(j.effort) ? (j.effort as Effort) : undefined
     const confidence = Number.isFinite(Number(j.confidence)) ? Number(j.confidence) : 0.5
-    return { route: { tier, effort }, confidence, rationale: j.routing_rationale }
+    const difficulty = readDifficulty(j.difficulty)
+    return {
+      route: { tier, effort },
+      confidence,
+      rationale: j.routing_rationale,
+      ...(difficulty ? { difficulty } : {}),
+    }
   } catch {
     return undefined
   }
@@ -46,6 +71,26 @@ export function parseClassification(text: string): Classified | undefined {
 
 export function describe(route: Route): string {
   return `${LABEL[route.tier]}${route.effort ? ` · ${route.effort}` : ''}`
+}
+
+/** `sonnet max`，與 /route 同一套別名；認不得就用 fallback */
+export function parseRouteSpec(spec: string | undefined, fallback: Route): Route {
+  if (!spec?.trim()) return fallback
+  const [which, effort] = spec.trim().split(/\s+/)
+  const tier = which ? ALIAS[which] : undefined
+  if (!tier) return fallback
+  if (tier === 'TIER_3_HAIKU') return { tier }
+  if (effort !== undefined && !EFFORTS.includes(effort)) return fallback
+  return { tier, effort: (effort as Effort | undefined) ?? fallback.effort ?? 'medium' }
+}
+
+/** 重試一次：比 hard 弱就改走 hard，否則 effort 升一級。已經到頂就不動 */
+export function escalate(route: Route, hard: Route): Route | undefined {
+  if (RANK[hard.tier] > RANK[route.tier]) return { tier: hard.tier, effort: hard.effort }
+  if (route.tier === 'TIER_3_HAIKU') return undefined
+  const next = EFFORTS[EFFORTS.indexOf(route.effort ?? 'medium') + 1]
+  if (!next) return undefined
+  return { tier: route.tier, effort: next as Effort }
 }
 
 export type PromptOutcome = { toast?: string }
@@ -58,8 +103,12 @@ export class Router {
   window: SessionEvent | undefined = 'startup' // 有值 = 路由窗口開著
   compactSummary = ''
   lastPrompt = ''
+  difficulty: Difficulty | undefined // 最近一次分類的問答難度；沒有就是一般任務
 
-  constructor(public midSession: MidSession = 'upgrade') {}
+  constructor(
+    public midSession: MidSession = 'upgrade',
+    public routes: DifficultyRoutes = DIFFICULTY_ROUTES,
+  ) {}
 
   onSessionStart(source: string) {
     // startup / resume / clear / compact / fork：cache 本來就要重建，開啟路由窗口
@@ -98,9 +147,19 @@ export class Router {
   applyClassification(pending: Pending, out: Classified | undefined, messageCount: number): PromptOutcome {
     if (pending.inWindow) this.window = undefined
     if (!out) return {}
+    this.difficulty = out.difficulty
+    const resolved = this.withDifficulty(out)
     return pending.inWindow
-      ? this.routeInWindow(out, pending.event, messageCount)
-      : this.upgradeMidSession(out)
+      ? this.routeInWindow(resolved, pending.event, messageCount)
+      : this.upgradeMidSession(resolved)
+  }
+
+  // 問答：用對照表，不看分類器自己填的 tier。信心不足就改走 hard（不確定就不要用便宜模型）
+  private withDifficulty(out: Classified): Classified {
+    if (!out.difficulty) return out
+    const picked =
+      out.confidence < LOW_CONFIDENCE && out.difficulty !== 'hard' ? this.routes.hard : this.routes[out.difficulty]
+    return { ...out, route: { tier: picked.tier, effort: picked.effort } }
   }
 
   finishPrompt(text: string) {

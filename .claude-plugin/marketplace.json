@@ -8,7 +8,7 @@
     {
       "name": "model-router",
       "source": "./model-router",
-      "description": "依 prompt 自動選擇 Opus / Sonnet / Haiku 與 effort；對話中途只升不降"
+      "description": "依 prompt 自動選擇 Opus / Sonnet / Haiku 與 effort；問答依難度路由"
     }
   ]
 }

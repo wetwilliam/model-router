@@ -53,6 +53,9 @@ claude --plugin-dir ".\model-router-repo\model-router"
 - Setting `midSession`: `upgrade` (default) · `suggest` (only a toast) · `off` (no classification mid-conversation).
 - `/guard` shows the context guard's thresholds, settings and the last 5 evaluations (diagnostics).
 - Never touched: models you pick with `/model`, subagents, and anything when classification fails or times out (the current route is kept).
+- Questions (not file edits or commands) also get a difficulty. Defaults, same spelling as `/route`: easy `sonnet max` (`easyRoute`; `sonnet medium` is the cheaper alternative), hard `opus medium`, obscure facts `sonnet low`. On an 8-easy + 2-hard set this was about 4.3 solved / $2.02, versus about 4.4 / $3.90 sending every question to Opus medium. Confidence under 0.6 on easy or obscure uses the hard route. Mid-conversation still only upgrades.
+- After a text answer, free checks run first (asked-for format, a plausible range, the same error twice, length over 2.5× the recent normal once 5 answers are known). Only a hit calls Haiku, which returns `{"ok","why","confidence"}`. A not-ok verdict at confidence ≥ 0.7 retries **once** on a stronger model or one effort step up. A `/route` pin or a manual `/model` skips the check. That first answer may already be on screen.
+- Each main-loop request is appended to `cost.jsonl` in the plugin directory (`usd_estimate` uses published list prices for calibration, not as a bill). Appending stops around 3MB.
 
 ## Context guard
 
@@ -91,6 +94,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and the [design doc](docs/design.md).
 - [Claude Code hooks](https://code.claude.com/docs/en/hooks) · [Model configuration](https://code.claude.com/docs/en/model-config) · [Plugins](https://code.claude.com/docs/en/plugins)
 - [Prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
 - [claude-code-router](https://github.com/musistudio/claude-code-router) · [Pilot Shell model routing](https://pilot-shell.com/docs/features/model-routing) · [Issue #44976](https://github.com/anthropics/claude-code/issues/44976)
+- [RouteLLM](https://github.com/lm-sys/RouteLLM) and [TokenEconomizer loopguard](https://github.com/microsoft/TokenEconomizer/tree/main/tokeneconomizer/loopguard) shaped the routing and the check-then-judge cascade. Neither is a dependency.
 - Jev (not implemented yet): [DigitalOcean](https://www.digitalocean.com/resources/articles/what-is-jev) · [OpenRouter](https://openrouter.ai/typesafe/jev-1.13/api)
 
 ## License

@@ -1,9 +1,19 @@
 import type { EngineInterface, Register } from 'claude-code'
 
+import {
+  AnswerCheck,
+  JUDGE_SYSTEM,
+  costLine,
+  estimateUsd,
+  judgeInput,
+  parseJudgment,
+  tokensOf,
+} from './check'
+import type { CostKind, Judgment, Rule, TokenUsage } from './check'
 import { DEFAULT_GUARD, Guard, parseRelevance, RELEVANCE_SYSTEM, relevanceInput } from './guard'
 import type { Relevance } from './guard'
 import { ROUTER_SYSTEM } from './prompt'
-import { parseClassification, Router } from './router'
+import { DIFFICULTY_ROUTES, MODEL, describe, escalate, parseClassification, parseRouteSpec, Router } from './router'
 import type { Classified, MidSession, SessionEvent } from './router'
 
 const CLASSIFY_TIMEOUT_MS = 4000 // 分類逾時就沿用目前路由
@@ -35,6 +45,89 @@ async function checkRelevance($: EngineInterface, input: string): Promise<Releva
     { signal: stop.signal },
   )
   return r.isAnswered ? parseRelevance(r.text) : undefined
+}
+
+const COST_LOG = 'cost.jsonl'
+const COST_LOG_MAX_BYTES = 3_000_000
+
+function logStep(
+  $: EngineInterface,
+  router: Router,
+  kind: CostKind,
+  model: string,
+  effort: unknown,
+  usage: TokenUsage | null | undefined,
+  escalated: boolean,
+  rules?: Rule[],
+  judgment?: Judgment,
+) {
+  return appendCost(
+    $,
+    costLine({
+      ts: new Date().toISOString(),
+      kind,
+      model,
+      effort: typeof effort === 'string' ? effort : undefined,
+      difficulty: router.difficulty,
+      ...tokensOf(usage),
+      usd_estimate: estimateUsd(model, usage),
+      escalated,
+      rules,
+      judge_ok: judgment?.ok,
+      judge_confidence: judgment?.confidence,
+    }),
+  )
+}
+
+async function appendCost($: EngineInterface, line: string) {
+  try {
+    const path = `${$.plugin.root}/${COST_LOG}`
+    if (await $.fs.exists(path)) {
+      if ((await $.fs.stat(path)).size > COST_LOG_MAX_BYTES) return
+      const prev = await $.fs.read(path)
+      const body = prev === '' || prev.endsWith('\n') ? prev : `${prev}\n`
+      await $.fs.write(path, `${body}${line}\n`)
+    } else {
+      await $.fs.write(path, `${line}\n`)
+    }
+  } catch {
+    // 記帳失敗不能擋住這輪
+  }
+}
+
+async function judge(
+  $: EngineInterface,
+  prompt: string,
+  answer: string,
+  rules: Rule[],
+): Promise<Judgment | undefined> {
+  const stop = new AbortController()
+  $.clock.sleep(CLASSIFY_TIMEOUT_MS).then(
+    () => stop.abort(),
+    () => {},
+  )
+  const r = await $.model.complete(
+    { model: 'haiku', effort: 'low', maxTokens: 80, system: JUDGE_SYSTEM, prompt: judgeInput(prompt, answer, rules) },
+    { signal: stop.signal },
+  )
+  const parsed = r.isAnswered ? parseJudgment(r.text) : undefined
+  const usage: TokenUsage | undefined = r.usage
+  await appendCost(
+    $,
+    costLine({
+      ts: new Date().toISOString(),
+      kind: 'judge',
+      model: 'haiku',
+      effort: 'low',
+      ...tokensOf(usage),
+      usd_estimate: estimateUsd('haiku', usage),
+      escalated: false,
+      rules,
+      judge_ok: parsed?.ok,
+      judge_confidence: parsed?.confidence,
+    }),
+  )
+  return parsed
 }
 
 /** 路由窗口開著或對話中途時，替這句分類並套用 */
@@ -71,10 +164,17 @@ export const register: Register = (on, options) => {
     if (guardLog.length > 5) guardLog.shift()
   }
   const mid = String(options.midSession ?? 'upgrade')
-  const router = new Router(mid === 'suggest' || mid === 'off' ? (mid as MidSession) : 'upgrade')
+  const spec = (v: unknown) => (typeof v === 'string' ? v : undefined)
+  const router = new Router(mid === 'suggest' || mid === 'off' ? (mid as MidSession) : 'upgrade', {
+    easy: parseRouteSpec(spec(options.easyRoute), DIFFICULTY_ROUTES.easy),
+    hard: parseRouteSpec(spec(options.hardRoute), DIFFICULTY_ROUTES.hard),
+    obscure: parseRouteSpec(spec(options.obscureRoute), DIFFICULTY_ROUTES.obscure),
+  })
+  const checker = new AnswerCheck()
 
   on('classic.SessionStart', ($, e, next) => {
     router.onSessionStart(e.source)
+    if (e.source === 'startup' || e.source === 'clear' || e.source === 'compact') checker.resetLengths()
     return next(e)
   })
 
@@ -120,6 +220,7 @@ export const register: Register = (on, options) => {
   })
 
   on('prompt.submit', async ($, e, next) => {
+    checker.startTurn()
     // 上下文守衛：只攔使用者自己在終端機送的訊息；任何錯誤都放行
     if (e.origin.kind === 'composer' && !e.text.startsWith('/')) {
       try {
@@ -189,8 +290,50 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  on('tool.call', async ($, e, next) => {
+    const result = await next(e)
+    try {
+      if (result && result.isError === true) checker.noteError(result.text ?? JSON.stringify(result.result ?? ''))
+    } catch {
+      // 記錯誤簽名失敗不能影響工具結果
+    }
+    return result
+  })
+
   on('turn.step', async function* ($, e, next) {
-    const override = router.step(e.agentId)
-    return yield* next(override ? { ...e, ...override } : e)
+    if (e.agentId) return yield* next(e)
+    const override = router.step(undefined)
+    const sent = override ? { ...e, ...override } : e
+    const result = yield* next(sent)
+    const model = result.usage?.model ?? sent.model
+    const final = result.stopReason === 'end_turn' && result.toolUses.length === 0
+    let rules: Rule[] = []
+    let judgment: Judgment | undefined
+    if (final && !router.userModel && !router.pinned && !checker.escalated) {
+      rules = checker.hits(router.lastPrompt, result.answer)
+      if (rules.length) {
+        judgment = await judge($, router.lastPrompt, result.answer, rules).catch(() => undefined)
+        const up = checker.shouldRetry(judgment) ? escalate(router.current, router.routes.hard) : undefined
+        if (up) {
+          checker.escalated = true
+          try {
+            const retry = yield* next({ ...e, model: MODEL[up.tier], effort: up.effort })
+            router.current = { tier: up.tier, effort: up.effort }
+            $.ui.status(router.status())
+            $.ui.toast(`答案未通過檢查，已改以 ${describe(router.current)} 重試一次`)
+            await logStep($, router, 'answer', model, sent.effort, result.usage, false, rules, judgment)
+            await logStep($, router, 'retry', retry.usage?.model ?? MODEL[up.tier], up.effort, retry.usage, true, rules, judgment)
+            checker.noteLength(retry.answer.length)
+            return retry
+          } catch {
+            // 重試失敗就留下原來的回答
+          }
+        }
+      }
+      // 被判不行的回答不寫進「正常長度」，避免門檻被壞答案拉高
+      if (!checker.escalated && judgment?.ok !== false) checker.noteLength(result.answer.length)
+    }
+    await logStep($, router, final ? 'answer' : 'step', model, sent.effort, result.usage, false, rules, judgment)
+    return result
   })
 }

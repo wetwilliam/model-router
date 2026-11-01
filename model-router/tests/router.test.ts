@@ -2,9 +2,10 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
+import { AnswerCheck, costLine, estimateUsd, parseJudgment } from '../hooks/check'
 import { DEFAULT_GUARD, Guard, LABEL, parseRelevance, relevanceInput } from '../hooks/guard'
-import { MODEL, parseClassification, Router } from '../hooks/router'
-import type { Classified, Tier } from '../hooks/router'
+import { DIFFICULTY_ROUTES, MODEL, escalate, parseClassification, parseRouteSpec, Router } from '../hooks/router'
+import type { Classified, Difficulty, Tier } from '../hooks/router'
 
 const c = (tier: Tier, confidence: number, effort?: Classified['route']['effort']): Classified => ({
   route: { tier, effort },
@@ -31,6 +32,12 @@ describe('parseClassification', () => {
   test('不合法的 tier 或非 JSON 回傳 undefined', () => {
     expect(parseClassification('{"risk_tier":"GPT"}')).toBeUndefined()
     expect(parseClassification('我覺得用 Opus')).toBeUndefined()
+  })
+  test('問答難度：easy / obscure-fact 會留下，null 與亂值不會', () => {
+    expect(parseClassification('{"risk_tier":"TIER_3_HAIKU","confidence":0.9,"difficulty":"easy"}')?.difficulty).toBe('easy')
+    expect(parseClassification('{"risk_tier":"TIER_2_SONNET","effort":"low","confidence":0.8,"difficulty":"obscure-fact"}')?.difficulty).toBe('obscure')
+    expect(parseClassification('{"risk_tier":"TIER_2_SONNET","effort":"medium","confidence":0.9,"difficulty":null}')?.difficulty).toBeUndefined()
+    expect(parseClassification('{"risk_tier":"TIER_2_SONNET","effort":"medium","confidence":0.9,"difficulty":"luna"}')?.difficulty).toBeUndefined()
   })
 })
 
@@ -125,6 +132,144 @@ describe('手動優先', () => {
   test('subagent 不改寫', () => {
     const r = new Router()
     expect(r.step('agent-1')).toBeUndefined()
+  })
+})
+
+const q = (tier: Tier, confidence: number, difficulty: Difficulty, effort?: Classified['route']['effort']): Classified => ({
+  route: { tier, effort },
+  confidence,
+  difficulty,
+})
+
+describe('問答難度', () => {
+  test('easy → Sonnet max，hard → Opus medium，obscure → Sonnet low', () => {
+    const easy = new Router()
+    submit(easy, q('TIER_3_HAIKU', 0.9, 'easy'))
+    expect(easy.current).toEqual(DIFFICULTY_ROUTES.easy)
+    expect(easy.step(undefined)).toEqual({ model: MODEL.TIER_2_SONNET, effort: 'max' })
+
+    const hard = new Router()
+    submit(hard, q('TIER_1_OPUS', 0.9, 'hard', 'xhigh'))
+    expect(hard.current).toEqual(DIFFICULTY_ROUTES.hard)
+
+    const obscure = new Router()
+    submit(obscure, q('TIER_1_OPUS', 0.9, 'obscure', 'high'))
+    expect(obscure.current).toEqual(DIFFICULTY_ROUTES.obscure)
+  })
+  test('窗口內信心不足的 easy 改走 hard', () => {
+    const r = new Router()
+    submit(r, q('TIER_3_HAIKU', 0.4, 'easy'))
+    expect(r.current).toEqual(DIFFICULTY_ROUTES.hard)
+  })
+  test('中途 easy 不降級、也不改 effort；hard 仍要信心 ≥ 0.8 才升級', () => {
+    const r = new Router()
+    submit(r, c('TIER_2_SONNET', 0.9, 'medium'))
+    submit(r, q('TIER_3_HAIKU', 0.99, 'easy'))
+    expect(r.current).toEqual({ tier: 'TIER_2_SONNET', effort: 'medium' })
+    submit(r, q('TIER_1_OPUS', 0.7, 'hard', 'xhigh'))
+    expect(r.current.tier).toBe('TIER_2_SONNET')
+    submit(r, q('TIER_1_OPUS', 0.9, 'hard', 'xhigh'))
+    expect(r.current).toEqual(DIFFICULTY_ROUTES.hard)
+  })
+  test('對照表可換；認不得的設定沿用預設', () => {
+    const r = new Router('upgrade', {
+      easy: { tier: 'TIER_3_HAIKU' },
+      hard: { tier: 'TIER_1_OPUS', effort: 'high' },
+      obscure: { tier: 'TIER_2_SONNET', effort: 'low' },
+    })
+    submit(r, q('TIER_2_SONNET', 0.9, 'easy', 'medium'))
+    expect(r.step(undefined)).toEqual({ model: MODEL.TIER_3_HAIKU, effort: undefined })
+    expect(parseRouteSpec('sonnet medium', DIFFICULTY_ROUTES.easy)).toEqual({ tier: 'TIER_2_SONNET', effort: 'medium' })
+    expect(parseRouteSpec('gpt max', DIFFICULTY_ROUTES.hard)).toEqual(DIFFICULTY_ROUTES.hard)
+    expect(parseRouteSpec(undefined, DIFFICULTY_ROUTES.obscure)).toEqual(DIFFICULTY_ROUTES.obscure)
+  })
+  test('重試：較弱的模型改走 hard，已經是強模型就升一級 effort', () => {
+    expect(escalate(DIFFICULTY_ROUTES.easy, DIFFICULTY_ROUTES.hard)).toEqual(DIFFICULTY_ROUTES.hard)
+    expect(escalate(DIFFICULTY_ROUTES.obscure, DIFFICULTY_ROUTES.hard)).toEqual(DIFFICULTY_ROUTES.hard)
+    expect(escalate({ tier: 'TIER_1_OPUS', effort: 'medium' }, DIFFICULTY_ROUTES.hard)).toEqual({
+      tier: 'TIER_1_OPUS',
+      effort: 'high',
+    })
+    expect(escalate({ tier: 'TIER_1_OPUS', effort: 'max' }, DIFFICULTY_ROUTES.hard)).toBeUndefined()
+  })
+})
+
+describe('答後檢查', () => {
+  test('沒要求格式的空回答不命中，避免每次思考都去叫判斷模型', () => {
+    expect(new AnswerCheck().hits('繼續', '')).toEqual([])
+    expect(new AnswerCheck().hits('請說明 JSON 是什麼', '一種資料格式')).toEqual([])
+  })
+  test('要求 JSON 或數字卻沒給 → format', () => {
+    const g = new AnswerCheck()
+    expect(g.hits('請用 JSON 回答', '好的')).toEqual(['format'])
+    expect(g.hits('請用 JSON 回答', '結果：{"ok":true}')).toEqual([])
+    expect(g.hits('只回一個數字', '大約四十二')).toEqual(['format'])
+    expect(g.hits('只回一個數字', '42')).toEqual([])
+  })
+  test('短回答的百分比、年份、明示區間超出才算 range', () => {
+    const g = new AnswerCheck()
+    expect(g.hits('轉換成百分比', '140')).toEqual(['range'])
+    expect(g.hits('轉換成百分比', '40%')).toEqual([])
+    expect(g.hits('這是西元哪一年', '90')).toEqual(['range'])
+    expect(g.hits('這是西元哪一年', '1990')).toEqual([])
+    expect(g.hits('答案介於 0 到 10', '11')).toEqual(['range'])
+    expect(g.hits('答案介於 0 到 10', 'x'.repeat(300) + ' 11')).toEqual([])
+  })
+  test('同樣的錯誤出現兩次 → repeat；長度要超過正常值的 2.5 倍且至少 5 筆', () => {
+    const g = new AnswerCheck()
+    g.noteError('Error: connection reset')
+    expect(g.hits('跑一下', '還在查')).toEqual([])
+    g.noteError('Error: connection reset')
+    expect(g.hits('跑一下', '還在查')).toEqual(['repeat'])
+
+    const lines = new AnswerCheck()
+    expect(lines.hits('說明', 'Error: connection reset\nError: connection reset')).toEqual(['repeat'])
+
+    const len = new AnswerCheck()
+    expect(len.hits('說明', 'x'.repeat(1000))).toEqual([])
+    for (let i = 0; i < 5; i++) len.noteLength(100)
+    expect(len.hits('說明', 'x'.repeat(250))).toEqual([])
+    expect(len.hits('說明', 'x'.repeat(251))).toEqual(['length'])
+  })
+  test('判斷只在 ok=false 且信心 ≥ 0.7 時重試；解析失敗不重試', () => {
+    const g = new AnswerCheck()
+    expect(parseJudgment('{"ok":false,"why":"超出範圍","confidence":0.91}')).toEqual({
+      ok: false,
+      why: '超出範圍',
+      confidence: 0.91,
+    })
+    expect(parseJudgment('{"ok":"no"}')).toBeUndefined()
+    expect(g.shouldRetry(parseJudgment('不行'))).toBe(false)
+    expect(g.shouldRetry({ ok: false, why: '長', confidence: 0.69 })).toBe(false)
+    expect(g.shouldRetry({ ok: true, why: '可以', confidence: 0.95 })).toBe(false)
+    expect(g.shouldRetry({ ok: false, why: '超出', confidence: 0.7 })).toBe(true)
+    g.escalated = true
+    expect(g.shouldRetry({ ok: false, why: '超出', confidence: 0.9 })).toBe(false)
+  })
+  test('成本列帶 escalated，牌價可算出美元；不認得的模型不編成 0', () => {
+    const line = costLine({
+      ts: '2026-11-01T00:00:00.000Z',
+      kind: 'retry',
+      model: MODEL.TIER_1_OPUS,
+      effort: 'medium',
+      difficulty: 'hard',
+      input_tokens: 1_000_000,
+      output_tokens: 0,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+      usd_estimate: 4,
+      escalated: true,
+      rules: ['range'],
+      judge_ok: false,
+      judge_confidence: 0.7,
+    })
+    expect(JSON.parse(line)).toMatchObject({ kind: 'retry', escalated: true, usd_estimate: 4, difficulty: 'hard' })
+    expect(estimateUsd(MODEL.TIER_1_OPUS, { input_tokens: 1_000_000 })).toBe(4)
+    expect(estimateUsd(MODEL.TIER_2_SONNET, { output_tokens: 1_000_000 })).toBe(10)
+    expect(estimateUsd(MODEL.TIER_3_HAIKU, { cache_read_input_tokens: 1_000_000 })).toBe(0.1)
+    expect(estimateUsd('haiku', { input_tokens: 1_000_000 })).toBe(1)
+    expect(estimateUsd('gpt-6-luna', { input_tokens: 100 })).toBeNull()
+    expect(estimateUsd(MODEL.TIER_1_OPUS, null)).toBeNull()
   })
 })
 
@@ -257,6 +402,43 @@ test('引擎：訊息帶 @檔案 → 壓縮後不自動重送，文字放回輸�
   expect(bottom.commands).toEqual(['compact'])
   expect(bottom.prompts).toEqual([])
   expect(bottom.fills).toEqual(['看一下 @src/app.ts'])
+})
+
+test('引擎：百分比超出範圍且判斷不通過 → 以 Opus medium 重試一次', async ($, on) => {
+  const sent: { model: string; effort?: unknown }[] = []
+  on('model.complete', ($, e) => {
+    const blob = JSON.stringify(e)
+    // 判斷呼叫帶 <answer> 或輸出規格；分類呼叫沒有
+    if (blob.includes('<answer>') || blob.includes('{"ok":') || blob.includes('"maxTokens":80')) {
+      return { value: reply({ ok: false, why: '超過一百', confidence: 0.91 }) }
+    }
+    return { value: reply({ risk_tier: 'TIER_2_SONNET', effort: 'medium', confidence: 0.95, difficulty: 'easy' }) }
+  })
+  on('classic.SessionStart', () => ({}))
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  on('turn.step', async function* ($, e) {
+    sent.push({ model: e.model, effort: e.effort })
+    return {
+      turnId: e.turnId,
+      index: e.index,
+      answer: '140',
+      toolUses: [],
+      stopReason: 'end_turn',
+      usage: {
+        input_tokens: 1000,
+        output_tokens: 10,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        model: e.model,
+      },
+    }
+  })
+  await $.classic.SessionStart({ source: 'startup' })
+  await $.prompt.submit(say('這題答案是一個百分比'))
+  await step($)
+  expect(sent[0]).toEqual({ model: MODEL.TIER_2_SONNET, effort: 'max' })
+  expect(sent[1]).toEqual({ model: MODEL.TIER_1_OPUS, effort: 'medium' })
+  expect(sent.length).toBe(2)
 })
 
 test('引擎：守衛選繼續 → 訊息照常送出，不執行任何指令', async ($, on) => {
